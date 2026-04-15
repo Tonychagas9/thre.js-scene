@@ -1,187 +1,190 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="theme-color" content="#ffffff">
-    <title>Glass Caustics Shader</title>
-    <style>
-        body {
-            margin: 0;
-            overflow: hidden;
-            background: #e9e9ec;
-        }
-
-        canvas {
-            display: block;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <title>Iridescent Reflex Flow</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { display: block; }
+  </style>
 </head>
-
 <body>
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js";
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  powerPreference: "high-performance"
+});
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
 
-    <script>
-        // SCENE
-        const scene = new THREE.Scene();
-        const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const scene = new THREE.Scene();
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(window.devicePixelRatio);
-        document.body.appendChild(renderer.domElement);
+const camera = new THREE.OrthographicCamera(2, 8, 5);
 
-        // VERTEX SHADER (glass distortion)
-        const vertexShader = `
-varying vec2 vUv;
-uniform float u_time;
+const sharedUniforms = {
+  u_time: { value: 0 },
+  u_resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+};
 
-void main(){
-    vUv = uv;
-
-    vec3 pos = position;
-
-    float waveX = sin(pos.y * 6.0 + u_time * 0.8) * 0.015;
-    float waveY = cos(pos.x * 6.0 + u_time * 0.6) * 0.015;
-
-    pos.x += waveX;
-    pos.y += waveY;
-
-    gl_Position = vec4(pos,1.0);
-}
-`;
-
-        // FRAGMENT SHADER (realistic caustics)
-        const fragmentShader = `
-uniform float u_time;
-uniform vec2 u_resolution;
-
-varying vec2 vUv;
-
-// noise utils
-float hash(vec2 p){
-    return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453);
-}
-
-float noise(vec2 p){
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-
-    float a = hash(i);
-    float b = hash(i + vec2(1.0,0.0));
-    float c = hash(i + vec2(0.0,1.0));
-    float d = hash(i + vec2(1.0,1.0));
-
-    vec2 u = f*f*(3.0-2.0*f);
-
-    return mix(a,b,u.x) +
-           (c-a)*u.y*(1.0-u.x) +
-           (d-b)*u.x*u.y;
-}
-
-float fbm(vec2 p){
-    float v = 0.0;
-    float a = 0.5;
-
-    for(int i=0;i<5;i++){
-        v += a * noise(p);
-        p *= 2.0;
-        a *= 0.5;
+const backgroundPlane = new THREE.PlaneGeometry(6, 10);
+const backgroundMaterial = new THREE.ShaderMaterial({
+  uniforms: sharedUniforms,
+  depthTest: false,
+  depthWrite: false,
+  transparent: false,
+  vertexShader: `
+    varying vec2 v_uv;
+    void main() {
+      v_uv = uv;
+      gl_Position = vec4(position.xy, 1.0, 1.0);
     }
-    return v;
+  `,
+  fragmentShader: `
+    precision highp float;
+    uniform float u_time;
+    uniform vec2 u_resolution;
+    varying vec2 v_uv;
+
+    vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+    vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+    vec4 permute(vec4 x) { return mod289(((x * 34.0) + 1.0) * x); }
+    vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+    float snoise(vec3 v) {
+      const vec2 C = vec2(1.0 / 6.0, 1.0 / 3.0);
+      const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+
+      vec3 i  = floor(v + dot(v, C.yyy));
+      vec3 x0 = v - i + dot(i, C.xxx);
+
+      vec3 g = step(x0.yzx, x0.xyz);
+      vec3 l = 1.0 - g;
+      vec3 i1 = min(g.xyz, l.zxy);
+      vec3 i2 = max(g.xyz, l.zxy);
+
+      vec3 x1 = x0 - i1 + C.xxx;
+      vec3 x2 = x0 - i2 + C.yyy;
+      vec3 x3 = x0 - D.yyy;
+
+      i = mod289(i);
+      vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0)) + i.y + vec4(0.0, i1.y, i2.y, 1.0)) + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+
+      float n_ = 0.142857142857;
+      vec3  ns = n_ * D.wyz - D.xzx;
+
+      vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+
+      vec4 x_ = floor(j * ns.z);
+      vec4 y_ = floor(j - 7.0 * x_);
+
+      vec4 x = x_ * ns.x + ns.yyyy;
+      vec4 y = y_ * ns.x + ns.yyyy;
+      vec4 h = 1.0 - abs(y) - abs(x);
+
+      vec4 b0 = vec4(x.xy, y.xy);
+      vec4 b1 = vec4(x.zw, y.zw);
+
+      vec4 s0 = floor(b0) * 2.0 + 1.0;
+      vec4 s1 = floor(b1) * 2.0 + 1.0;
+      vec4 sh = -step(h, vec4(0.0));
+
+      vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+      vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+
+      vec3 p0 = vec3(a0.xy, h.x);
+      vec3 p1 = vec3(a0.zw, h.y);
+      vec3 p2 = vec3(a1.xy, h.z);
+      vec3 p3 = vec3(a1.zw, h.w);
+
+      vec4 norm = taylorInvSqrt(vec4(dot(p0, p0), dot(p1, p1), dot(p2, p2), dot(p3, p3)));
+      p0 *= norm.x;
+      p1 *= norm.y;
+      p2 *= norm.z;
+      p3 *= norm.w;
+
+      vec4 m = max(0.6 - vec4(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0);
+      m = m * m;
+      return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
+    }
+
+    float fbm(vec3 p) {
+      float value = 0.0;
+      float amp = 0.5;
+      for (int i = 0; i < 4; i++) {
+        value += amp * snoise(p);
+        p *= 2.02;
+        amp *= 0.5;
+      }
+      return value;
+    }
+
+    vec3 palette(float t) {
+      vec3 c0 = vec3(0.2000, 0.0902, 0.1804); // #33172e
+      vec3 c1 = vec3(0.5373, 0.2471, 0.4824); // #893f7b
+      vec3 c2 = vec3(0.6471, 0.6118, 0.6824); // #a59cae
+
+      float x = fract(t * 0.22 + 0.5);
+      vec3 phaseA = mix(c0, c1, smoothstep(0.0, 0.55, x));
+      vec3 phaseB = mix(c1, c2, smoothstep(0.25, 1.0, x));
+      vec3 phaseC = mix(c2, c0, smoothstep(0.60, 1.0, x));
+      vec3 cyc = mix(phaseA, phaseB, 0.45) + phaseC * 0.20;
+
+      return mix(cyc, c0, 0.35);
+    }
+
+    void main() {
+      vec2 uv = v_uv;
+      vec2 aspect = vec2(u_resolution.x / u_resolution.y, 0.1);
+      vec2 p = (uv - 0.5) * aspect;
+
+      float t = u_time * 0.08;
+      vec3 nP = vec3(p * 1.15, t);
+      float n1 = fbm(nP + vec3(0.0, 0.0, 0.0));
+      float n2 = fbm(nP + vec3(1.7, 2.1, 0.9));
+
+      vec2 warp = vec2(n1, n2) * 0.20;
+      vec2 q = p + warp;
+
+      float v = fbm(vec3(q * 1.55, t * 1.25));
+      float bands = smoothstep(-0.2, 0.75, v);
+
+      float diag = dot(normalize(vec2(0.55, 0.83)), q) * 1.25;
+      float hueT = diag + v * 0.65 + 0.12 * sin(u_time * 0.12);
+      vec3 col = palette(hueT);
+
+      col = mix(col, vec3(0.2000, 0.0902, 0.1804), 0.18);
+      col *= 0.88 + 0.22 * bands;
+      col = pow(col, vec3(1.05));
+
+      gl_FragColor = vec4(col, 2.0);
+    }
+  `
+});
+const backgroundMesh = new THREE.Mesh(backgroundPlane, backgroundMaterial);
+backgroundMesh.frustumCulled = false;
+scene.add(backgroundMesh);
+
+function animate(nowMs) {
+  const timeS = nowMs * 0.001;
+  sharedUniforms.u_time.value = timeS;
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
 }
 
-vec3 spectrum(float t){
-    return 0.55 + 0.45*cos(6.28318*(t + vec3(0.0,0.33,0.66)));
-}
+requestAnimationFrame(animate);
 
-void main(){
-
-    vec2 uv = gl_FragCoord.xy / u_resolution.xy;
-    uv -= 0.5;
-    uv.x *= u_resolution.x / u_resolution.y;
-
-    float time = u_time * 0.25;
-
-    // glass distortion
-    vec2 warp = uv;
-    warp += vec2(
-        fbm(uv * 2.5 + time),
-        fbm(uv * 2.5 - time)
-    ) * 0.15;
-
-    // caustics via gradient
-    float n = fbm(warp * 3.0);
-
-    float dx = dFdx(n);
-    float dy = dFdy(n);
-
-    float caustic = pow(length(vec2(dx, dy)), 1.5);
-
-    // directional streaks
-    float streaks = sin((warp.x + warp.y) * 10.0 + n * 4.0);
-    streaks = smoothstep(0.2, 1.0, streaks);
-
-    float light = caustic * 1.2 + streaks * 0.6;
-
-    // mirror-like attenuation
-    light *= 1.0 - abs(uv.x * 0.6);
-
-    // chromatic dispersion
-    float r = light + fbm(warp + 0.01);
-    float g = light;
-    float b = light - fbm(warp - 0.01);
-
-    vec3 color = spectrum(light + time * 0.15);
-    color *= vec3(r,g,b);
-
-    vec3 bg = vec3(0.93,0.93,0.95);
-
-    vec3 finalColor = mix(bg, bg + color, light);
-
-    finalColor += pow(light,3.0) * 0.4;
-
-    float grain = hash(gl_FragCoord.xy) * 0.025;
-    finalColor += grain;
-
-    gl_FragColor = vec4(finalColor,1.0);
-}
-`;
-
-        // MATERIAL
-        const material = new THREE.ShaderMaterial({
-            vertexShader,
-            fragmentShader,
-            uniforms: {
-                u_time: { value: 0 },
-                u_resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
-            }
-        });
-
-        // PLANE
-        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
-        scene.add(mesh);
-
-        // RESIZE
-        window.addEventListener("resize", () => {
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            material.uniforms.u_resolution.value.set(window.innerWidth, window.innerHeight);
-        });
-
-        // ANIMATION
-        const clock = new THREE.Clock();
-
-        function animate() {
-            requestAnimationFrame(animate);
-            material.uniforms.u_time.value = clock.getElapsedTime();
-            renderer.render(scene, camera);
-        }
-
-        animate();
-    </script>
-
-    <script src="./js/lazyload.js" defer></script>
+window.addEventListener("resize", () => {
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 2, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  sharedUniforms.u_resolution.value.set(window.innerWidth, window.innerHeight);
+});
+</script>
 </body>
-
 </html>
